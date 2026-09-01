@@ -6,7 +6,8 @@ Conjunto de interfaces TCP en Python puro para actuar como **redirector de servi
 
 - **Sin dependencias externas**: solo librerías estándar de Python.
 - **Un script por fabricante**: cada modelo (Teltonika, Concox, GT06, etc.) se atiende en su propio archivo ejecutable.
-- **Concurrencia por proceso**: cada cliente se maneja en un `multiprocessing.Process` daemon para aislar bloqueos.
+- **TCP + UDP en paralelo** sobre el mismo puerto (Teltonika = 37540 en ambos protocolos).
+- **Concurrencia por proceso**: cada cliente TCP y cada listener (TCP/UDP) corre en su propio proceso.
 - **Logging por script**: cada `.py` genera su propio `.log` con timestamps en UTC-5.
 - **Configuración via `.env`** (no versionado) con fallback a constantes y override por variable de entorno.
 
@@ -21,8 +22,8 @@ python-gps-redirect-gprs/
 ├── _config.py          # Loader de .env sin dependencias externas
 ├── .env.example        # Plantilla de variables (sí versionada)
 ├── .gitignore          # Ignora .env y *.log
-├── teltonika.py        # Servidor TCP en puerto 37540 (codec 12 / CRC-16/IBM)
-├── teltonika.py.log    # (generado) log de RX/DECODED/TX por conexión
+├── teltonika.py        # Servidor TCP + UDP en puerto 37540 (codec 12 / CRC-16/IBM)
+├── teltonika.log       # (generado) log de RX/DECODED/TX por conexión
 └── AGENTS.md           # Guía de contexto y convenciones para el agente
 ```
 
@@ -39,8 +40,9 @@ Variables reconocidas (Teltonika como ejemplo):
 | Variable | Descripción | Default |
 |----------|-------------|---------|
 | `TELTONIKA_TCP_PORT` | Puerto TCP donde escucha | `37540` |
+| `TELTONIKA_UDP_PORT` | Puerto UDP donde escucha (mismo que TCP por defecto) | `37540` |
 | `TELTONIKA_CMD_TEXT` | Comando GPRS de redirección | `setparam 2004:51.161.45.73;2005:2900;2006:0` |
-| `TELTONIKA_SOCKET_TIMEOUT` | Timeout de `recv` en segundos | `300` |
+| `TELTONIKA_SOCKET_TIMEOUT` | Timeout de `recv`/`recvfrom` en segundos | `300` |
 
 Orden de resolución (mayor a menor prioridad):
 1. Variable de entorno del sistema.
