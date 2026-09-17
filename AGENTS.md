@@ -88,7 +88,7 @@ El proyecto queda listo para producción como **redirector puro Teltonika TCP/UD
 - **Memoria acotada**: dicts IMEI-keyed con TTL 24h en UDP; TCP se libera al cerrar la conexión.
 - **Watchdog robusto**: timeout no cierra sockets; server siempre disponible.
 - **Cambio de destino**: editar `TELTONIKA_CMD_TEXT` en `.env` y reiniciar (`systemctl restart python-gps-redirect-gprs.service`).
-- **Despliegue soportado**: systemd unit + Dockerfile de ejemplo en `README.md`.
+- **Despliegue soportado**: systemd unit en `README.md` (sin Docker — el proyecto es Python puro y corre directo en el VPS con `python3 teltonika.py`).
 - **Sin dependencias externas**: solo `python3` con stdlib (sin `pip install`).
 
 ### Comportamiento operativo verificado

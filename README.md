@@ -21,9 +21,10 @@ Conjunto de interfaces TCP en Python puro para actuar como **redirector de servi
 python-gps-redirect-gprs/
 ├── _config.py          # Loader de .env sin dependencias externas
 ├── .env.example        # Plantilla de variables (sí versionada)
-├── .gitignore          # Ignora .env y *.log
+├── .gitignore          # Ignora .env, *.log y docs/
 ├── teltonika.py        # Servidor TCP + UDP en puerto 37540 (codec 12 / CRC-16/IBM)
-├── teltonika.log       # (generado) log de RX/DECODED/TX por conexión
+├── logs/               # (generado) teltonika.log y teltonika_imei.log
+├── docs/               # (no versionado) documentación de codecs por fabricante
 └── AGENTS.md           # Guía de contexto y convenciones para el agente
 ```
 
@@ -67,15 +68,19 @@ Ver `AGENTS.md` para detalles del protocolo de cada fabricante y cómo agregar n
 
 ## Despliegue
 
+El proyecto es **Python puro sin dependencias externas**, pensado para correr directamente en el VPS de producción con `python3 teltonika.py`. No usa Docker.
+
 ### Local (desarrollo)
 
 ```bash
 python3 teltonika.py
 ```
 
-### Producción (systemd)
+### Producción (systemd en VPS)
 
-Ejemplo de unit file (`/etc/systemd/system/python-gps-redirect-gprs.service`):
+El binario a ejecutar es `python3 teltonika.py`. Sin virtualenv, sin `pip install`. La configuración vive en `.env` (NO versionado) y se carga vía `_config.load_env`.
+
+Unit file en `/etc/systemd/system/python-gps-redirect-gprs.service`:
 
 ```ini
 [Unit]
@@ -104,37 +109,13 @@ systemctl enable --now python-gps-redirect-gprs.service
 journalctl -u python-gps-redirect-gprs.service -f
 ```
 
-### Producción (Docker)
-
-```dockerfile
-FROM python:3.12-alpine
-WORKDIR /app
-COPY _config.py ./
-COPY teltonika.py ./
-COPY .env ./
-EXPOSE 37540/udp
-EXPOSE 37540/tcp
-CMD ["python3", "teltonika.py"]
-```
-
-```bash
-docker build -t python-gps-redirect-gprs .
-docker run -d --name redirector \
-  --restart unless-stopped \
-  -p 37540:37540/udp \
-  -p 37540:37540/tcp \
-  --env-file .env \
-  -v $(pwd)/logs:/app/logs \
-  python-gps-redirect-gprs
-```
-
 ### Notas operativas
 
 - **Logs**: se escriben en `logs/teltonika.log` (RX/TX por conexión) y `logs/teltonika_imei.log` (1 línea por IMEI único, TTL 24h).
 - **Watchdog**: si pasan `TELTONIKA_SOCKET_TIMEOUT` segundos sin tráfico, se loguea `idle timeout (still listening)` y el loop continúa. El server **no se cierra por inactividad**.
 - **Memoria**: el proceso UDP lleva dicts `{imei: timestamp}` purgados cada 24h, evitando leak en sesiones largas.
 - **Fallo de disco**: `log_message` y `log_imei_once` están blindados con `try/except OSError`; un fallo de E/S no mata al proceso, solo se loguea por stdout.
-- **Cambiar destino de redirección**: editar `TELTONIKA_CMD_TEXT` en `.env` y reiniciar el servicio.
+- **Cambiar destino de redirección**: editar `TELTONIKA_CMD_TEXT` en `.env` y `systemctl restart python-gps-redirect-gprs.service`.
 
 ## Licencia
 
