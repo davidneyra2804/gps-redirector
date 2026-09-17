@@ -57,7 +57,7 @@ Para iniciar: `cp .env.example .env` y editar valores. `.env.example` sí está 
 - `parse_udp_header(data)` — parsea header UDP Teltonika (length 2B + packetId 2B + type 1B + avlId 1B + imeiLen 2B + imei). Devuelve dict o None.
 - `log_message(addr, rx_hex, rx_decoded, tx_hex)` — append a `<script>.log`.
 - `log_imei_once(seen, proto, imei)` — append a `<script>_imei.log` solo si el IMEI no está en el set `seen`. El set se muta in-place; vive dentro del proceso (TCP: por conexión; UDP: global al loop).
-- `handle_client(conn, addr)` — loop RX/decodificar/enviar respuesta en proceso hijo (TCP).
+- `handle_client(conn, addr)` — loop RX/decodificar/enviar respuesta en proceso hijo (TCP). Mantiene `redirected_imei: set[imei]` (keyed por IMEI) en la conexión: el primer paquete de un IMEI handshake (17B con IMEI parseable) responde con `make_teltonika_cmd(COMMAND_TEXT)` (Codec 12 `setparam`); los siguientes con `make_teltonika_cmd("cpureset")` (Codec 12 reset). Tramas sin IMEI parseable también caen en `cpureset`. Log de IMEI único independiente: `seen_imei: set`.
 - `tcp_server(host, port)` — accept loop TCP, lanza `handle_client` por conexión.
 - `handle_udp_server(host, port)` — loop único de `recvfrom`. Mantiene `redirected: dict[imei, bool]` keyed por IMEI: el primer paquete válido de un IMEI responde con `make_teltonika_cmd(COMMAND_TEXT)` (Codec 12 `setparam`); los siguientes con `make_teltonika_cmd("cpureset")` (Codec 12 reset). Header inválido no responde ni muta estado. La key por IMEI (no por `addr`) resiste NAT rebind.
 
