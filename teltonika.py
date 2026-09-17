@@ -4,14 +4,15 @@
 import os
 import socket
 import multiprocessing
-import time
 from datetime import datetime, timezone, timedelta
 
 from _config import load_env
 
 
 UTC_MINUS_5 = timezone(timedelta(hours=-5))
-LOG_FILE = os.path.splitext(os.path.basename(__file__))[0] + ".log"
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+LOG_FILE = os.path.join(LOG_DIR, os.path.splitext(os.path.basename(__file__))[0] + ".log")
+IMEI_LOG_FILE = os.path.join(LOG_DIR, os.path.splitext(os.path.basename(__file__))[0] + "_imei.log")
 
 _CFG = load_env(
     "TELTONIKA_",
@@ -90,10 +91,9 @@ def parse_udp_header(data: bytes) -> dict | None:
     """
     if len(data) < 8:
         return None
-    packet_id = int.from_bytes(data[2:4], "big")
     packet_type = data[4]
     avl_packet_id = data[5]
-    if packet_type != 0x01 or packet_id != 0:
+    if packet_type != 0x01:
         return None
     if len(data) < 10:
         return None
@@ -111,9 +111,25 @@ def parse_udp_header(data: bytes) -> dict | None:
 
 def log_message(addr, rx_hex: str, rx_decoded: str, tx_hex: str):
     """Append a log entry to the log file."""
+    os.makedirs(LOG_DIR, exist_ok=True)
     ts = datetime.now(UTC_MINUS_5).strftime("%Y-%m-%d %H:%M:%S")
     line = f"{ts} | {addr} | RX: {rx_hex} | DECODED: {rx_decoded} | TX: {tx_hex}\n"
     with open(LOG_FILE, "a") as f:
+        f.write(line)
+
+
+def log_imei_once(seen: set, proto: str, imei: str):
+    """Append a unique IMEI entry to the IMEI ledger.
+
+    The set is mutated in-place to track which IMEIs have already been logged.
+    """
+    if imei in seen:
+        return
+    seen.add(imei)
+    os.makedirs(LOG_DIR, exist_ok=True)
+    ts = datetime.now(UTC_MINUS_5).strftime("%Y-%m-%d %H:%M:%S")
+    line = f"{ts} | {proto} | IMEI: {imei}\n"
+    with open(IMEI_LOG_FILE, "a") as f:
         f.write(line)
 
 
@@ -122,13 +138,14 @@ def handle_client(conn: socket.socket, addr: tuple):
     pid = multiprocessing.current_process().pid
     print(f"[PID {pid}] TCP Connected: {addr}")
     conn.settimeout(SOCKET_TIMEOUT)
+    seen_imei = set()
     try:
         while True:
             try:
                 data = conn.recv(4096)
             except TimeoutError:
-                print(f"[PID {pid}] TCP Timeout waiting for data: {addr}")
-                break
+                print(f"[PID {pid}] TCP idle timeout (still listening): {addr}")
+                continue
             if not data:
                 break
 
@@ -140,15 +157,13 @@ def handle_client(conn: socket.socket, addr: tuple):
 
             print(f"[PID {pid}] TCP RX ({len(data)} bytes): {hex_data}")
 
-            wait = False
-            if len(data) == 17:
-                response = make_teltonika_cmd(COMMAND_TEXT)
-            else:
-                wait = True
-                response = make_teltonika_cmd("cpureset")
+            if len(data) >= 17:
+                imei = data[2:17].decode("ascii", errors="replace")
+                if imei.isdigit() and len(imei) == 15:
+                    log_imei_once(seen_imei, "TCP", imei)
 
-            if wait:
-                time.sleep(2)
+            response = make_teltonika_cmd(COMMAND_TEXT)
+
             conn.sendall(response)
             print(f"[PID {pid}] TCP TX ({len(response)} bytes): {response.hex()}")
             log_message(addr, hex_data, decoded, response.hex())
@@ -193,12 +208,14 @@ def handle_udp_server(host: str, port: int):
     sock.settimeout(SOCKET_TIMEOUT)
     print(f"[PID {pid}] UDP listening on {host}:{port}")
     try:
+        redirected = {}
+        seen_imei = set()
         while True:
             try:
                 data, addr = sock.recvfrom(4096)
             except TimeoutError:
-                print(f"[PID {pid}] UDP timeout, exiting loop")
-                break
+                print(f"[PID {pid}] UDP idle timeout (still listening)")
+                continue
             if not data:
                 continue
 
@@ -206,17 +223,21 @@ def handle_udp_server(host: str, port: int):
             parsed = parse_udp_header(data)
             if parsed is None:
                 decoded = "(invalid UDP header)"
-                ack = b""
+                response = b""
             else:
                 decoded = f"IMEI={parsed['imei']} AVL_ID={parsed['avl_packet_id']} payload={parsed['payload'].hex()}"
-                records_count = parsed["payload"][4] if len(parsed["payload"]) >= 5 else 0
-                ack = make_teltonika_udp_ack(parsed["avl_packet_id"], records_count)
+                log_imei_once(seen_imei, "UDP", parsed["imei"])
+                if redirected.get(parsed["imei"]):
+                    response = make_teltonika_cmd("cpureset")
+                else:
+                    response = make_teltonika_cmd(COMMAND_TEXT)
+                    redirected[parsed["imei"]] = True
 
             print(f"[PID {pid}] UDP RX ({len(data)} bytes) from {addr}: {hex_data}")
-            if ack:
-                sock.sendto(ack, addr)
-                print(f"[PID {pid}] UDP TX ({len(ack)} bytes) to {addr}: {ack.hex()}")
-            log_message(addr, hex_data, decoded, ack.hex() if ack else "")
+            if response:
+                sock.sendto(response, addr)
+                print(f"[PID {pid}] UDP TX ({len(response)} bytes) to {addr}: {response.hex()}")
+            log_message(addr, hex_data, decoded, response.hex() if response else "")
 
     except (ConnectionResetError, BrokenPipeError, OSError) as e:
         print(f"[PID {pid}] UDP error: {e}")

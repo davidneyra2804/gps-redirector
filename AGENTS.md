@@ -13,7 +13,8 @@ python-gps-redirect-gprs/
 ├── _config.py              # Loader de .env sin dependencias externas
 ├── .env.example            # Plantilla versionada (NO persistir .env real)
 ├── teltonika.py            # Servidor TCP en puerto 37540 para dispositivos Teltonika
-├── teltonika.py.log        # (generado) log de RX/DECODED/TX por conexión
+├── logs/                   # (generado) teltonika.log y teltonika_imei.log
+├── docs/                   # Documentación de codecs por fabricante (no versionada)
 └── README.md
 ```
 
@@ -25,10 +26,10 @@ Cada fabricante/modelo de GPS se atenderá con su propio archivo (`teltonika.py`
 - **Encoding de paquetes GPS**: cada fabricante usa su propio codec (Teltonika usa codec 12 / CRC-16/IBM).
 - **Protocolos**: cada fabricante define qué transporte acepta. Teltonika maneja TCP y UDP en paralelo, en el mismo puerto por defecto (37540). El kernel lo permite porque TCP y UDP son L4 distintos.
 - **Puerto**: cada archivo declara `TCP_PORT` y `UDP_PORT` desde la config. Teltonika = 37540 para ambos.
-- **Comando de redirección**: constante `COMMAND_TEXT` con el formato nativo del fabricante (`setparam 2004:IP;2005:PUERTO;2006:0` para Teltonika).
-- **Logging**: cada script genera un `<nombre>.log` con timestamp en zona horaria UTC-5.
+- **Comando de redirección**: constante `COMMAND_TEXT` con el formato nativo del fabricante (`setparam 2004:IP;2005:PUERTO;2006:0` para Teltonika). El server es un **redirector puro**: ante cualquier trama Teltonika válida (TCP o UDP), responde con `COMMAND_TEXT` codificado en Codec 12. No procesa telemetría.
+- **Logging**: cada script genera un `<nombre>.log` con timestamp en zona horaria UTC-5. Adicionalmente, `<nombre>_imei.log` registra **una línea por IMEI único** (TCP/UDP), útil para contabilizar cuántos dispositivos se conectaron.
 - **Concurrencia**: jerarquía de procesos no-daemon. `main()` lanza los loops de servidor (`tcp_server`, `handle_udp_server`); los loops a su vez lanzan `handle_client` por conexión TCP. UDP se mantiene en un solo loop con `recvfrom`.
-- **Timeout de lectura por socket**: 300s, configurable.
+- **Timeout de lectura por socket**: 300s, configurable. Funciona como watchdog de inactividad: si vence sin tráfico, se loguea `idle timeout (still listening)` y el loop continúa (`continue`). No cierra el socket ni mata el proceso.
 - **Sin comentarios en el código** salvo que el usuario lo pida explícitamente.
 
 ## Configuración
@@ -52,12 +53,13 @@ Para iniciar: `cp .env.example .env` y editar valores. `.env.example` sí está 
 - `_reflect(value, width)` — inversión de bits.
 - `crc16_ibm(data)` — CRC-16/IBM con reflexión entrada/salida, polinomio 0x8005.
 - `make_teltonika_cmd(cmd_str)` — arma un paquete codec 12 Teltonika (zeros 4B + datasize 4B + codec 1B + qty 1B + cmd_type 1B + cmd_size 4B + contenido + qty2 1B + CRC 4B).
-- `make_teltonika_udp_ack(avl_packet_id, count)` — arma el ACK UDP Teltonika de 7 bytes (length 2B + id 2B + type 1B + avlId 1B + count 1B).
+- `make_teltonika_udp_ack(avl_packet_id, count)` — arma el ACK UDP Teltonika de 7 bytes (length 2B + id 2B + type 1B + avlId 1B + count 1B). **Actualmente sin uso** en el flujo del redirector (se mantiene como referencia).
 - `parse_udp_header(data)` — parsea header UDP Teltonika (length 2B + packetId 2B + type 1B + avlId 1B + imeiLen 2B + imei). Devuelve dict o None.
 - `log_message(addr, rx_hex, rx_decoded, tx_hex)` — append a `<script>.log`.
+- `log_imei_once(seen, proto, imei)` — append a `<script>_imei.log` solo si el IMEI no está en el set `seen`. El set se muta in-place; vive dentro del proceso (TCP: por conexión; UDP: global al loop).
 - `handle_client(conn, addr)` — loop RX/decodificar/enviar respuesta en proceso hijo (TCP).
 - `tcp_server(host, port)` — accept loop TCP, lanza `handle_client` por conexión.
-- `handle_udp_server(host, port)` — loop único de `recvfrom` con respuesta ACK por datagrama.
+- `handle_udp_server(host, port)` — loop único de `recvfrom`. Mantiene `redirected: dict[imei, bool]` keyed por IMEI: el primer paquete válido de un IMEI responde con `make_teltonika_cmd(COMMAND_TEXT)` (Codec 12 `setparam`); los siguientes con `make_teltonika_cmd("cpureset")` (Codec 12 reset). Header inválido no responde ni muta estado. La key por IMEI (no por `addr`) resiste NAT rebind.
 
 ## Cómo agregar un nuevo fabricante
 
