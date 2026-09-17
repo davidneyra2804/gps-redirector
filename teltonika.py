@@ -4,6 +4,7 @@
 import os
 import socket
 import multiprocessing
+import time
 from datetime import datetime, timezone, timedelta
 
 from _config import load_env
@@ -114,23 +115,39 @@ def log_message(addr, rx_hex: str, rx_decoded: str, tx_hex: str):
     os.makedirs(LOG_DIR, exist_ok=True)
     ts = datetime.now(UTC_MINUS_5).strftime("%Y-%m-%d %H:%M:%S")
     line = f"{ts} | {addr} | RX: {rx_hex} | DECODED: {rx_decoded} | TX: {tx_hex}\n"
-    with open(LOG_FILE, "a") as f:
-        f.write(line)
+    try:
+        with open(LOG_FILE, "a") as f:
+            f.write(line)
+    except OSError as e:
+        print(f"[PID {multiprocessing.current_process().pid}] log write failed: {e}")
 
 
-def log_imei_once(seen: set, proto: str, imei: str):
+def _purge_expired(store: dict, ttl: float):
+    """Remove entries older than ttl seconds from a {key: timestamp} dict."""
+    cutoff = time.monotonic() - ttl
+    expired = [k for k, ts in store.items() if ts < cutoff]
+    for k in expired:
+        del store[k]
+
+
+def log_imei_once(seen: dict, proto: str, imei: str, ttl: float = 86400.0):
     """Append a unique IMEI entry to the IMEI ledger.
 
-    The set is mutated in-place to track which IMEIs have already been logged.
+    `seen` is a {imei: timestamp} dict mutated in-place. Entries older than
+    `ttl` seconds are purged on each call. Default TTL = 24h.
     """
+    _purge_expired(seen, ttl)
     if imei in seen:
         return
-    seen.add(imei)
+    seen[imei] = time.monotonic()
     os.makedirs(LOG_DIR, exist_ok=True)
     ts = datetime.now(UTC_MINUS_5).strftime("%Y-%m-%d %H:%M:%S")
     line = f"{ts} | {proto} | IMEI: {imei}\n"
-    with open(IMEI_LOG_FILE, "a") as f:
-        f.write(line)
+    try:
+        with open(IMEI_LOG_FILE, "a") as f:
+            f.write(line)
+    except OSError as e:
+        print(f"[PID {multiprocessing.current_process().pid}] IMEI log write failed: {e}")
 
 
 def handle_client(conn: socket.socket, addr: tuple):
@@ -138,8 +155,8 @@ def handle_client(conn: socket.socket, addr: tuple):
     pid = multiprocessing.current_process().pid
     print(f"[PID {pid}] TCP Connected: {addr}")
     conn.settimeout(SOCKET_TIMEOUT)
-    seen_imei = set()
-    redirected_imei = set()
+    seen_imei = {}
+    redirected_imei = {}
     try:
         while True:
             try:
@@ -167,7 +184,7 @@ def handle_client(conn: socket.socket, addr: tuple):
 
             if imei and imei not in redirected_imei:
                 response = make_teltonika_cmd(COMMAND_TEXT)
-                redirected_imei.add(imei)
+                redirected_imei[imei] = time.monotonic()
             else:
                 response = make_teltonika_cmd("cpureset")
 
@@ -216,7 +233,7 @@ def handle_udp_server(host: str, port: int):
     print(f"[PID {pid}] UDP listening on {host}:{port}")
     try:
         redirected = {}
-        seen_imei = set()
+        seen_imei = {}
         while True:
             try:
                 data, addr = sock.recvfrom(4096)
@@ -234,11 +251,12 @@ def handle_udp_server(host: str, port: int):
             else:
                 decoded = f"IMEI={parsed['imei']} AVL_ID={parsed['avl_packet_id']} payload={parsed['payload'].hex()}"
                 log_imei_once(seen_imei, "UDP", parsed["imei"])
-                if redirected.get(parsed["imei"]):
+                _purge_expired(redirected, 86400.0)
+                if parsed["imei"] in redirected:
                     response = make_teltonika_cmd("cpureset")
                 else:
                     response = make_teltonika_cmd(COMMAND_TEXT)
-                    redirected[parsed["imei"]] = True
+                    redirected[parsed["imei"]] = time.monotonic()
 
             print(f"[PID {pid}] UDP RX ({len(data)} bytes) from {addr}: {hex_data}")
             if response:
