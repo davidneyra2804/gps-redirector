@@ -139,6 +139,7 @@ def handle_client(conn: socket.socket, addr: tuple):
     print(f"[PID {pid}] TCP Connected: {addr}")
     conn.settimeout(SOCKET_TIMEOUT)
     seen_imei = set()
+    redirected_imei = set()
     try:
         while True:
             try:
@@ -157,12 +158,18 @@ def handle_client(conn: socket.socket, addr: tuple):
 
             print(f"[PID {pid}] TCP RX ({len(data)} bytes): {hex_data}")
 
+            imei = None
             if len(data) >= 17:
-                imei = data[2:17].decode("ascii", errors="replace")
-                if imei.isdigit() and len(imei) == 15:
+                candidate = data[2:17].decode("ascii", errors="replace")
+                if candidate.isdigit() and len(candidate) == 15:
+                    imei = candidate
                     log_imei_once(seen_imei, "TCP", imei)
 
-            response = make_teltonika_cmd(COMMAND_TEXT)
+            if imei and imei not in redirected_imei:
+                response = make_teltonika_cmd(COMMAND_TEXT)
+                redirected_imei.add(imei)
+            else:
+                response = make_teltonika_cmd("cpureset")
 
             conn.sendall(response)
             print(f"[PID {pid}] TCP TX ({len(response)} bytes): {response.hex()}")
