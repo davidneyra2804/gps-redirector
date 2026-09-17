@@ -79,3 +79,23 @@ No hay suite de tests automatizados aún. Verificación manual:
 ## Zona horaria
 
 Toda la actividad se registra en **UTC-5** (`UTC_MINUS_5`).
+
+## Release a producción — `master@6e56b8d`
+
+El proyecto queda listo para producción como **redirector puro Teltonika TCP/UDP**:
+
+- **Logs durables**: en `logs/` (no raíz), con blindaje ante fallos de disco.
+- **Memoria acotada**: dicts IMEI-keyed con TTL 24h en UDP; TCP se libera al cerrar la conexión.
+- **Watchdog robusto**: timeout no cierra sockets; server siempre disponible.
+- **Cambio de destino**: editar `TELTONIKA_CMD_TEXT` en `.env` y reiniciar (`systemctl restart python-gps-redirect-gprs.service`).
+- **Despliegue soportado**: systemd unit + Dockerfile de ejemplo en `README.md`.
+- **Sin dependencias externas**: solo `python3` con stdlib (sin `pip install`).
+
+### Comportamiento operativo verificado
+
+Server fresco recibe `RX #1 [IMEI X] → setparam` y `RX #2 [mismo IMEI] → cpureset`. Re-envíos del mismo dispositivo producen `cpureset` por diseño, no son bug.
+
+### Pendiente / fuera de scope
+
+- No hay suite de tests automatizados. Verificación es manual con Packet Sender.
+- Hindsight memory backend cayó (Postgres shared memory). `AGENTS.md` y `docs/` quedan como fuente durable hasta que vuelva.

@@ -65,6 +65,77 @@ nc localhost 37540
 
 Ver `AGENTS.md` para detalles del protocolo de cada fabricante y cómo agregar nuevos modelos.
 
+## Despliegue
+
+### Local (desarrollo)
+
+```bash
+python3 teltonika.py
+```
+
+### Producción (systemd)
+
+Ejemplo de unit file (`/etc/systemd/system/python-gps-redirect-gprs.service`):
+
+```ini
+[Unit]
+Description=Teltonika GPS redirector (TCP+UDP :37540)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gps
+WorkingDirectory=/opt/python-gps-redirect-gprs
+EnvironmentFile=/opt/python-gps-redirect-gprs/.env
+ExecStart=/usr/bin/python3 /opt/python-gps-redirect-gprs/teltonika.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Activar:
+
+```bash
+systemctl daemon-reload
+systemctl enable --now python-gps-redirect-gprs.service
+journalctl -u python-gps-redirect-gprs.service -f
+```
+
+### Producción (Docker)
+
+```dockerfile
+FROM python:3.12-alpine
+WORKDIR /app
+COPY _config.py ./
+COPY teltonika.py ./
+COPY .env ./
+EXPOSE 37540/udp
+EXPOSE 37540/tcp
+CMD ["python3", "teltonika.py"]
+```
+
+```bash
+docker build -t python-gps-redirect-gprs .
+docker run -d --name redirector \
+  --restart unless-stopped \
+  -p 37540:37540/udp \
+  -p 37540:37540/tcp \
+  --env-file .env \
+  -v $(pwd)/logs:/app/logs \
+  python-gps-redirect-gprs
+```
+
+### Notas operativas
+
+- **Logs**: se escriben en `logs/teltonika.log` (RX/TX por conexión) y `logs/teltonika_imei.log` (1 línea por IMEI único, TTL 24h).
+- **Watchdog**: si pasan `TELTONIKA_SOCKET_TIMEOUT` segundos sin tráfico, se loguea `idle timeout (still listening)` y el loop continúa. El server **no se cierra por inactividad**.
+- **Memoria**: el proceso UDP lleva dicts `{imei: timestamp}` purgados cada 24h, evitando leak en sesiones largas.
+- **Fallo de disco**: `log_message` y `log_imei_once` están blindados con `try/except OSError`; un fallo de E/S no mata al proceso, solo se loguea por stdout.
+- **Cambiar destino de redirección**: editar `TELTONIKA_CMD_TEXT` en `.env` y reiniciar el servicio.
+
 ## Licencia
 
 Sin licencia especificada.
