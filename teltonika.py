@@ -12,6 +12,7 @@ from _config import load_env
 
 
 UTC_MINUS_5 = timezone(timedelta(hours=-5))
+PROTOCOL = "teltonika"
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 LOG_FILE = os.path.join(LOG_DIR, os.path.splitext(os.path.basename(__file__))[0] + ".log")
 IMEI_LOG_FILE = os.path.join(LOG_DIR, os.path.splitext(os.path.basename(__file__))[0] + "_imei.log")
@@ -120,7 +121,7 @@ def log_message(addr, rx_hex: str, rx_decoded: str, tx_hex: str):
         with open(LOG_FILE, "a") as f:
             f.write(line)
     except OSError as e:
-        print(f"[PID {multiprocessing.current_process().pid}] log write failed: {e}")
+        print(f"[{PROTOCOL}][PID {multiprocessing.current_process().pid}] log write failed: {e}")
 
 
 def _purge_expired(store: dict, ttl: float):
@@ -148,7 +149,7 @@ def log_imei_once(seen: dict, proto: str, imei: str, ttl: float = 86400.0):
         with open(IMEI_LOG_FILE, "a") as f:
             f.write(line)
     except OSError as e:
-        print(f"[PID {multiprocessing.current_process().pid}] IMEI log write failed: {e}")
+        print(f"[{PROTOCOL}][PID {multiprocessing.current_process().pid}] IMEI log write failed: {e}")
 
 
 def _wake_by_close(sock: socket.socket):
@@ -170,7 +171,7 @@ def handle_client(conn: socket.socket, addr: tuple, shutdown_event=None):
     the setparam response again.
     """
     pid = multiprocessing.current_process().pid
-    print(f"[PID {pid}] TCP Connected: {addr}")
+    print(f"[{PROTOCOL}][PID {pid}] TCP Connected: {addr}")
     conn.settimeout(SOCKET_TIMEOUT)
     signal.signal(signal.SIGTERM, _wake_by_close(conn))
     signal.signal(signal.SIGINT, _wake_by_close(conn))
@@ -183,7 +184,7 @@ def handle_client(conn: socket.socket, addr: tuple, shutdown_event=None):
             try:
                 data = conn.recv(4096)
             except TimeoutError:
-                print(f"[PID {pid}] TCP idle timeout, closing connection: {addr}")
+                print(f"[{PROTOCOL}][PID {pid}] TCP idle timeout, closing connection: {addr}")
                 break
             except OSError:
                 break
@@ -196,7 +197,7 @@ def handle_client(conn: socket.socket, addr: tuple, shutdown_event=None):
             except Exception:
                 decoded = "(decode error)"
 
-            print(f"[PID {pid}] TCP RX ({len(data)} bytes): {hex_data}")
+            print(f"[{PROTOCOL}][PID {pid}] TCP RX ({len(data)} bytes): {hex_data}")
 
             imei = None
             if len(data) >= 17:
@@ -206,17 +207,19 @@ def handle_client(conn: socket.socket, addr: tuple, shutdown_event=None):
                     log_imei_once(seen_imei, "TCP", imei)
 
             if imei and imei not in redirected_imei:
-                response = make_teltonika_cmd(COMMAND_TEXT)
+                cmd_text = COMMAND_TEXT
+                response = make_teltonika_cmd(cmd_text)
                 redirected_imei[imei] = time.monotonic()
             else:
-                response = make_teltonika_cmd("cpureset")
+                cmd_text = "cpureset"
+                response = make_teltonika_cmd(cmd_text)
 
             conn.sendall(response)
-            print(f"[PID {pid}] TCP TX ({len(response)} bytes): {response.hex()}")
+            print(f"[{PROTOCOL}][PID {pid}] TCP TX ({len(response)} bytes): {response.hex()} | CMD: {cmd_text}")
             log_message(addr, hex_data, decoded, response.hex())
 
     except (ConnectionResetError, BrokenPipeError, OSError) as e:
-        print(f"[PID {pid}] TCP Connection error: {e}")
+        print(f"[{PROTOCOL}][PID {pid}] TCP Connection error: {e}")
     except KeyboardInterrupt:
         pass
     finally:
@@ -224,7 +227,7 @@ def handle_client(conn: socket.socket, addr: tuple, shutdown_event=None):
             conn.close()
         except OSError:
             pass
-        print(f"[PID {pid}] TCP Connection closed: {addr}")
+        print(f"[{PROTOCOL}][PID {pid}] TCP Connection closed: {addr}")
 
 
 def tcp_server(host: str, port: int, shutdown_event=None):
@@ -237,7 +240,7 @@ def tcp_server(host: str, port: int, shutdown_event=None):
     server.settimeout(1.0)
     signal.signal(signal.SIGTERM, _wake_by_close(server))
     signal.signal(signal.SIGINT, _wake_by_close(server))
-    print(f"[PID {pid}] TCP listening on {host}:{port}")
+    print(f"[{PROTOCOL}][PID {pid}] TCP listening on {host}:{port}")
     try:
         while True:
             if shutdown_event is not None and shutdown_event.is_set():
@@ -255,12 +258,12 @@ def tcp_server(host: str, port: int, shutdown_event=None):
             client_proc.start()
             conn.close()
     except (ConnectionResetError, BrokenPipeError, OSError) as e:
-        print(f"[PID {pid}] TCP accept error: {e}")
+        print(f"[{PROTOCOL}][PID {pid}] TCP accept error: {e}")
     except KeyboardInterrupt:
         pass
     finally:
         server.close()
-        print(f"[PID {pid}] TCP server closed")
+        print(f"[{PROTOCOL}][PID {pid}] TCP server closed")
 
 
 def handle_udp_server(host: str, port: int, shutdown_event=None):
@@ -272,7 +275,7 @@ def handle_udp_server(host: str, port: int, shutdown_event=None):
     sock.settimeout(1.0)
     signal.signal(signal.SIGTERM, _wake_by_close(sock))
     signal.signal(signal.SIGINT, _wake_by_close(sock))
-    print(f"[PID {pid}] UDP listening on {host}:{port}")
+    print(f"[{PROTOCOL}][PID {pid}] UDP listening on {host}:{port}")
     try:
         redirected = {}
         seen_imei = {}
@@ -284,7 +287,7 @@ def handle_udp_server(host: str, port: int, shutdown_event=None):
                 data, addr = sock.recvfrom(4096)
             except TimeoutError:
                 if not idle_logged:
-                    print(f"[PID {pid}] UDP idle timeout (still listening)")
+                    print(f"[{PROTOCOL}][PID {pid}] UDP idle timeout (still listening)")
                     idle_logged = True
                 continue
             except OSError:
@@ -298,24 +301,27 @@ def handle_udp_server(host: str, port: int, shutdown_event=None):
             if parsed is None:
                 decoded = "(invalid UDP header)"
                 response = b""
+                cmd_text = ""
             else:
                 decoded = f"IMEI={parsed['imei']} AVL_ID={parsed['avl_packet_id']} payload={parsed['payload'].hex()}"
                 log_imei_once(seen_imei, "UDP", parsed["imei"])
                 _purge_expired(redirected, 86400.0)
                 if parsed["imei"] in redirected:
-                    response = make_teltonika_cmd("cpureset")
+                    cmd_text = "cpureset"
+                    response = make_teltonika_cmd(cmd_text)
                 else:
-                    response = make_teltonika_cmd(COMMAND_TEXT)
+                    cmd_text = COMMAND_TEXT
+                    response = make_teltonika_cmd(cmd_text)
                     redirected[parsed["imei"]] = time.monotonic()
 
-            print(f"[PID {pid}] UDP RX ({len(data)} bytes) from {addr}: {hex_data}")
+            print(f"[{PROTOCOL}][PID {pid}] UDP RX ({len(data)} bytes) from {addr}: {hex_data}")
             if response:
                 sock.sendto(response, addr)
-                print(f"[PID {pid}] UDP TX ({len(response)} bytes) to {addr}: {response.hex()}")
+                print(f"[{PROTOCOL}][PID {pid}] UDP TX ({len(response)} bytes) to {addr}: {response.hex()} | CMD: {cmd_text}")
             log_message(addr, hex_data, decoded, response.hex() if response else "")
 
     except (ConnectionResetError, BrokenPipeError, OSError) as e:
-        print(f"[PID {pid}] UDP error: {e}")
+        print(f"[{PROTOCOL}][PID {pid}] UDP error: {e}")
     except KeyboardInterrupt:
         pass
     finally:
@@ -323,7 +329,7 @@ def handle_udp_server(host: str, port: int, shutdown_event=None):
             sock.close()
         except OSError:
             pass
-        print(f"[PID {pid}] UDP socket closed")
+        print(f"[{PROTOCOL}][PID {pid}] UDP socket closed")
 
 
 def main():
@@ -355,7 +361,7 @@ def main():
     tcp_proc.start()
     udp_proc.start()
 
-    print(f"Server listening on {host}: TCP={TCP_PORT}, UDP={UDP_PORT}")
+    print(f"[{PROTOCOL}] Server listening on {host}: TCP={TCP_PORT}, UDP={UDP_PORT}")
 
     try:
         while tcp_proc.is_alive() or udp_proc.is_alive():
@@ -380,7 +386,7 @@ def main():
                 if p.is_alive():
                     p.kill()
                     p.join()
-        print("Server stopped.")
+        print(f"[{PROTOCOL}] Server stopped.")
 
 
 if __name__ == "__main__":
