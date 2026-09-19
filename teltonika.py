@@ -161,15 +161,21 @@ def _wake_by_close(sock: socket.socket):
 
 
 def handle_client(conn: socket.socket, addr: tuple, shutdown_event=None):
-    """Handle a single TCP client connection in a separate process."""
+    """Handle a single TCP client connection in a separate process.
+
+    The connection is closed after SOCKET_TIMEOUT seconds of inactivity
+    (recv returns TimeoutError). The listening socket in tcp_server is
+    unaffected — only this per-client connection is released. A new
+    connection from the same IMEI will be treated as fresh and receive
+    the setparam response again.
+    """
     pid = multiprocessing.current_process().pid
     print(f"[PID {pid}] TCP Connected: {addr}")
-    conn.settimeout(1.0)
+    conn.settimeout(SOCKET_TIMEOUT)
     signal.signal(signal.SIGTERM, _wake_by_close(conn))
     signal.signal(signal.SIGINT, _wake_by_close(conn))
     seen_imei = {}
     redirected_imei = {}
-    idle_logged = False
     try:
         while True:
             if shutdown_event is not None and shutdown_event.is_set():
@@ -177,15 +183,12 @@ def handle_client(conn: socket.socket, addr: tuple, shutdown_event=None):
             try:
                 data = conn.recv(4096)
             except TimeoutError:
-                if not idle_logged:
-                    print(f"[PID {pid}] TCP idle timeout (still listening): {addr}")
-                    idle_logged = True
-                continue
+                print(f"[PID {pid}] TCP idle timeout, closing connection: {addr}")
+                break
             except OSError:
                 break
             if not data:
                 break
-            idle_logged = False
 
             hex_data = data.hex()
             try:

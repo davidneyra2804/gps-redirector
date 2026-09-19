@@ -32,7 +32,7 @@ Designed for production on a single VPS, deployable as a plain systemd unit. No 
 - **Per-script logging** — every `.py` writes its own `.log` file with timestamps in UTC-5.
 - **Unique IMEI accounting** — a second `<script>_imei.log` records one line per distinct IMEI seen (TTL 24h), useful for fleet sizing.
 - **`.env`-based config** — environment variables override `.env` values, which override code defaults. No hardcoded secrets in the repo.
-- **Watchdog without socket death** — idle timeout logs `idle timeout (still listening)` and keeps the loop alive.
+- **Per-connection idle watchdog** — after `TELTONIKA_SOCKET_TIMEOUT` seconds of silence, the per-client TCP connection is closed and released. The listening socket stays open and accepts new connections on the same port; only the idle client connection dies. UDP has no persistent connection to close, so its `recvfrom` timeout just logs `UDP idle timeout (still listening)` and loops.
 - **Disk-failure resilient** — logging is wrapped in `try/except OSError`; an I/O failure logs to stdout and never kills the process.
 
 ## Supported protocols
@@ -147,7 +147,7 @@ journalctl -u gps-redirector.service -f
 ### Operational notes
 
 - **Logs**: written to `logs/teltonika.log` (per-connection RX/TX) and `logs/teltonika_imei.log` (one line per unique IMEI, 24h TTL).
-- **Watchdog**: after `TELTONIKA_SOCKET_TIMEOUT` seconds of silence, the server logs `idle timeout (still listening)` and the loop continues — **the server is never killed by inactivity**.
+- **Watchdog**: after `TELTONIKA_SOCKET_TIMEOUT` seconds of silence on a TCP connection, the per-client connection is closed (`TCP idle timeout, closing connection: <addr>`) and the client process exits. The listening socket on `TELTONIKA_TCP_PORT` keeps accepting new connections — **the server is never killed by inactivity**. On UDP, the `recvfrom` times out and the loop logs `UDP idle timeout (still listening)` and continues (UDP has no persistent connection to close).
 - **Memory bounded**: UDP keeps dicts keyed by IMEI purged every 24h; TCP state is released on connection close.
 - **Disk-failure safe**: `log_message` and `log_imei_once` are wrapped in `try/except OSError`; an I/O failure logs to stdout and never kills the process.
 - **Change redirect target**: edit `TELTONIKA_CMD_TEXT` in `.env` and run `systemctl restart gps-redirector.service`.
