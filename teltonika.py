@@ -2,6 +2,7 @@
 """TCP + UDP server for Teltonika GPS devices on port 37540."""
 
 import os
+import signal
 import socket
 import multiprocessing
 import time
@@ -150,22 +151,41 @@ def log_imei_once(seen: dict, proto: str, imei: str, ttl: float = 86400.0):
         print(f"[PID {multiprocessing.current_process().pid}] IMEI log write failed: {e}")
 
 
-def handle_client(conn: socket.socket, addr: tuple):
+def _wake_by_close(sock: socket.socket):
+    def _handler(*_):
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+    return _handler
+
+
+def handle_client(conn: socket.socket, addr: tuple, shutdown_event=None):
     """Handle a single TCP client connection in a separate process."""
     pid = multiprocessing.current_process().pid
     print(f"[PID {pid}] TCP Connected: {addr}")
-    conn.settimeout(SOCKET_TIMEOUT)
+    conn.settimeout(1.0)
+    signal.signal(signal.SIGTERM, _wake_by_close(conn))
+    signal.signal(signal.SIGINT, _wake_by_close(conn))
     seen_imei = {}
     redirected_imei = {}
+    idle_logged = False
     try:
         while True:
+            if shutdown_event is not None and shutdown_event.is_set():
+                break
             try:
                 data = conn.recv(4096)
             except TimeoutError:
-                print(f"[PID {pid}] TCP idle timeout (still listening): {addr}")
+                if not idle_logged:
+                    print(f"[PID {pid}] TCP idle timeout (still listening): {addr}")
+                    idle_logged = True
                 continue
+            except OSError:
+                break
             if not data:
                 break
+            idle_logged = False
 
             hex_data = data.hex()
             try:
@@ -194,54 +214,81 @@ def handle_client(conn: socket.socket, addr: tuple):
 
     except (ConnectionResetError, BrokenPipeError, OSError) as e:
         print(f"[PID {pid}] TCP Connection error: {e}")
+    except KeyboardInterrupt:
+        pass
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except OSError:
+            pass
         print(f"[PID {pid}] TCP Connection closed: {addr}")
 
 
-def tcp_server(host: str, port: int):
+def tcp_server(host: str, port: int, shutdown_event=None):
     """TCP accept loop in its own process (non-daemon)."""
     pid = multiprocessing.current_process().pid
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((host, port))
     server.listen(5)
+    server.settimeout(1.0)
+    signal.signal(signal.SIGTERM, _wake_by_close(server))
+    signal.signal(signal.SIGINT, _wake_by_close(server))
     print(f"[PID {pid}] TCP listening on {host}:{port}")
     try:
         while True:
-            conn, addr = server.accept()
+            if shutdown_event is not None and shutdown_event.is_set():
+                break
+            try:
+                conn, addr = server.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                break
             client_proc = multiprocessing.Process(
                 target=handle_client,
-                args=(conn, addr),
+                args=(conn, addr, shutdown_event),
             )
             client_proc.start()
             conn.close()
     except (ConnectionResetError, BrokenPipeError, OSError) as e:
         print(f"[PID {pid}] TCP accept error: {e}")
+    except KeyboardInterrupt:
+        pass
     finally:
         server.close()
         print(f"[PID {pid}] TCP server closed")
 
 
-def handle_udp_server(host: str, port: int):
+def handle_udp_server(host: str, port: int, shutdown_event=None):
     """Handle UDP datagrams in a separate process."""
     pid = multiprocessing.current_process().pid
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((host, port))
-    sock.settimeout(SOCKET_TIMEOUT)
+    sock.settimeout(1.0)
+    signal.signal(signal.SIGTERM, _wake_by_close(sock))
+    signal.signal(signal.SIGINT, _wake_by_close(sock))
     print(f"[PID {pid}] UDP listening on {host}:{port}")
     try:
         redirected = {}
         seen_imei = {}
+        idle_logged = False
         while True:
+            if shutdown_event is not None and shutdown_event.is_set():
+                break
             try:
                 data, addr = sock.recvfrom(4096)
             except TimeoutError:
-                print(f"[PID {pid}] UDP idle timeout (still listening)")
+                if not idle_logged:
+                    print(f"[PID {pid}] UDP idle timeout (still listening)")
+                    idle_logged = True
                 continue
+            except OSError:
+                break
             if not data:
                 continue
+            idle_logged = False
 
             hex_data = data.hex()
             parsed = parse_udp_header(data)
@@ -266,37 +313,71 @@ def handle_udp_server(host: str, port: int):
 
     except (ConnectionResetError, BrokenPipeError, OSError) as e:
         print(f"[PID {pid}] UDP error: {e}")
+    except KeyboardInterrupt:
+        pass
     finally:
-        sock.close()
+        try:
+            sock.close()
+        except OSError:
+            pass
         print(f"[PID {pid}] UDP socket closed")
 
 
 def main():
     host = "0.0.0.0"
+    shutdown_event = multiprocessing.Event()
+    procs = []
+
+    def _shutdown_children(*_):
+        shutdown_event.set()
+        for p in procs:
+            if p.is_alive():
+                try:
+                    os.kill(p.pid, signal.SIGINT)
+                except OSError:
+                    pass
+
+    signal.signal(signal.SIGINT, _shutdown_children)
+    signal.signal(signal.SIGTERM, _shutdown_children)
 
     tcp_proc = multiprocessing.Process(
         target=tcp_server,
-        args=(host, TCP_PORT),
+        args=(host, TCP_PORT, shutdown_event),
     )
     udp_proc = multiprocessing.Process(
         target=handle_udp_server,
-        args=(host, UDP_PORT),
+        args=(host, UDP_PORT, shutdown_event),
     )
+    procs.extend([tcp_proc, udp_proc])
     tcp_proc.start()
     udp_proc.start()
 
     print(f"Server listening on {host}: TCP={TCP_PORT}, UDP={UDP_PORT}")
 
     try:
-        tcp_proc.join()
-        udp_proc.join()
+        while tcp_proc.is_alive() or udp_proc.is_alive():
+            tcp_proc.join(timeout=0.5)
+            udp_proc.join(timeout=0.5)
     except KeyboardInterrupt:
-        print("\nShutting down server...")
+        pass
     finally:
-        for p in (tcp_proc, udp_proc):
+        shutdown_event.set()
+        for p in procs:
+            if p.is_alive():
+                try:
+                    os.kill(p.pid, signal.SIGINT)
+                except OSError:
+                    pass
+        for p in procs:
+            p.join(timeout=3)
+        for p in procs:
             if p.is_alive():
                 p.terminate()
-                p.join()
+                p.join(timeout=2)
+                if p.is_alive():
+                    p.kill()
+                    p.join()
+        print("Server stopped.")
 
 
 if __name__ == "__main__":
