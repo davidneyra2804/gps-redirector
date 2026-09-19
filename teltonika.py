@@ -197,14 +197,15 @@ def handle_client(conn: socket.socket, addr: tuple, shutdown_event=None):
             except Exception:
                 decoded = "(decode error)"
 
-            print(f"[{PROTOCOL}][PID {pid}] TCP RX ({len(data)} bytes): {hex_data}")
-
             imei = None
             if len(data) >= 17:
                 candidate = data[2:17].decode("ascii", errors="replace")
                 if candidate.isdigit() and len(candidate) == 15:
                     imei = candidate
                     log_imei_once(seen_imei, "TCP", imei)
+            imei_tag = f"[IMEI {imei}]" if imei else "[IMEI ?]"
+
+            print(f"[{PROTOCOL}][PID {pid}] TCP RX {imei_tag} ({len(data)} bytes): {hex_data}")
 
             if imei and imei not in redirected_imei:
                 cmd_text = COMMAND_TEXT
@@ -215,7 +216,7 @@ def handle_client(conn: socket.socket, addr: tuple, shutdown_event=None):
                 response = make_teltonika_cmd(cmd_text)
 
             conn.sendall(response)
-            print(f"[{PROTOCOL}][PID {pid}] TCP TX ({len(response)} bytes): {response.hex()} | CMD: {cmd_text}")
+            print(f"[{PROTOCOL}][PID {pid}] TCP TX {imei_tag} ({len(response)} bytes): {response.hex()} | CMD: {cmd_text}")
             log_message(addr, hex_data, decoded, response.hex())
 
     except (ConnectionResetError, BrokenPipeError, OSError) as e:
@@ -302,9 +303,11 @@ def handle_udp_server(host: str, port: int, shutdown_event=None):
                 decoded = "(invalid UDP header)"
                 response = b""
                 cmd_text = ""
+                imei_tag = "[IMEI ?]"
             else:
                 decoded = f"IMEI={parsed['imei']} AVL_ID={parsed['avl_packet_id']} payload={parsed['payload'].hex()}"
                 log_imei_once(seen_imei, "UDP", parsed["imei"])
+                imei_tag = f"[IMEI {parsed['imei']}]"
                 _purge_expired(redirected, 86400.0)
                 if parsed["imei"] in redirected:
                     cmd_text = "cpureset"
@@ -314,10 +317,10 @@ def handle_udp_server(host: str, port: int, shutdown_event=None):
                     response = make_teltonika_cmd(cmd_text)
                     redirected[parsed["imei"]] = time.monotonic()
 
-            print(f"[{PROTOCOL}][PID {pid}] UDP RX ({len(data)} bytes) from {addr}: {hex_data}")
+            print(f"[{PROTOCOL}][PID {pid}] UDP RX {imei_tag} ({len(data)} bytes) from {addr}: {hex_data}")
             if response:
                 sock.sendto(response, addr)
-                print(f"[{PROTOCOL}][PID {pid}] UDP TX ({len(response)} bytes) to {addr}: {response.hex()} | CMD: {cmd_text}")
+                print(f"[{PROTOCOL}][PID {pid}] UDP TX {imei_tag} ({len(response)} bytes) to {addr}: {response.hex()} | CMD: {cmd_text}")
             log_message(addr, hex_data, decoded, response.hex() if response else "")
 
     except (ConnectionResetError, BrokenPipeError, OSError) as e:
