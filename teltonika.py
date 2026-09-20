@@ -76,6 +76,10 @@ def make_teltonika_cmd(cmd_str: str) -> bytes:
     return packet
 
 
+_SETPARAM_RESPONSE = make_teltonika_cmd(COMMAND_TEXT)
+_CPURESET_RESPONSE = make_teltonika_cmd("cpureset")
+
+
 def make_teltonika_udp_ack(avl_packet_id: int, count: int) -> bytes:
     """Build a Teltonika UDP ACK packet (5 bytes)."""
     return (
@@ -183,7 +187,7 @@ def handle_client(conn: socket.socket, addr: tuple, shutdown_event=None):
             if shutdown_event is not None and shutdown_event.is_set():
                 break
             try:
-                data = conn.recv(4096)
+                data = conn.recv(1024)
             except TimeoutError:
                 print(f"[{PROTOCOL}][PID {pid}] TCP idle timeout, closing connection: {addr}")
                 break
@@ -212,11 +216,11 @@ def handle_client(conn: socket.socket, addr: tuple, shutdown_event=None):
 
             if imei and imei not in redirected_imei:
                 cmd_text = COMMAND_TEXT
-                response = make_teltonika_cmd(cmd_text)
+                response = _SETPARAM_RESPONSE
                 redirected_imei[imei] = time.monotonic()
             else:
                 cmd_text = "cpureset"
-                response = make_teltonika_cmd(cmd_text)
+                response = _CPURESET_RESPONSE
 
             conn.sendall(response)
             print(f"[{PROTOCOL}][PID {pid}] TCP TX {imei_tag} ({len(response)} bytes): {response.hex()} | CMD: {cmd_text}")
@@ -288,7 +292,7 @@ def handle_udp_server(host: str, port: int, shutdown_event=None):
             if shutdown_event is not None and shutdown_event.is_set():
                 break
             try:
-                data, addr = sock.recvfrom(4096)
+                data, addr = sock.recvfrom(1024)
             except TimeoutError:
                 if not idle_logged:
                     print(f"[{PROTOCOL}][PID {pid}] UDP idle timeout (still listening)")
@@ -314,10 +318,10 @@ def handle_udp_server(host: str, port: int, shutdown_event=None):
                 _purge_expired(redirected, 86400.0)
                 if parsed["imei"] in redirected:
                     cmd_text = "cpureset"
-                    response = make_teltonika_cmd(cmd_text)
+                    response = _CPURESET_RESPONSE
                 else:
                     cmd_text = COMMAND_TEXT
-                    response = make_teltonika_cmd(cmd_text)
+                    response = _SETPARAM_RESPONSE
                     redirected[parsed["imei"]] = time.monotonic()
 
             print(f"[{PROTOCOL}][PID {pid}] UDP RX {imei_tag} ({len(data)} bytes) from {addr}: {hex_data}")
