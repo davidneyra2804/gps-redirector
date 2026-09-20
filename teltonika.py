@@ -177,6 +177,7 @@ def handle_client(conn: socket.socket, addr: tuple, shutdown_event=None):
     signal.signal(signal.SIGINT, _wake_by_close(conn))
     seen_imei = {}
     redirected_imei = {}
+    last_imei = None
     try:
         while True:
             if shutdown_event is not None and shutdown_event.is_set():
@@ -203,7 +204,9 @@ def handle_client(conn: socket.socket, addr: tuple, shutdown_event=None):
                 if candidate.isdigit() and len(candidate) == 15:
                     imei = candidate
                     log_imei_once(seen_imei, "TCP", imei)
-            imei_tag = f"[IMEI {imei}]" if imei else "[IMEI ?]"
+            if imei:
+                last_imei = imei
+            imei_tag = f"[IMEI {last_imei}]" if last_imei else "[IMEI ?]"
 
             print(f"[{PROTOCOL}][PID {pid}] TCP RX {imei_tag} ({len(data)} bytes): {hex_data}")
 
